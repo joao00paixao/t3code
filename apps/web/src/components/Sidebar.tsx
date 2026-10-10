@@ -1,3 +1,4 @@
+import { ServerManagerButton } from "./preview/ServerManagerButton";
 import { type EnvironmentId } from "@t3tools/contracts";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "./ThreadHoverCard";
 import { CollapsibleSectionHeader } from "./ui/collapsible-section-header";
@@ -1836,6 +1837,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             {title}
             {pinIndicator}
             {terminalStatusIcon}
+            <ServerManagerButton threadRef={threadRef} compact />
             {isRegeneratingTitle ? (
               <span role="status" className="sr-only">
                 Regenerating title
@@ -2183,6 +2185,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                 <span className="flex-1" />
               )}
               {terminalStatusIcon}
+              <ServerManagerButton threadRef={threadRef} compact />
               {prBadge}
               {diff ? (
                 <span className="shrink-0 font-mono">

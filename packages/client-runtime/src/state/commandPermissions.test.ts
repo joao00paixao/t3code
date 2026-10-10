@@ -7,6 +7,7 @@ import type { RpcSession } from "../rpc/session.ts";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
+  AuthEnvironmentMaintainScope,
   AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
@@ -287,4 +288,35 @@ it.effect("rejects protected unary and streamed RPCs outside a guarded command",
     expect(streamed._tag).toBe("EnvironmentAuthorizationError");
     expect(writes).toBe(0);
   }),
+);
+
+it.effect("stopping a server requires maintenance permission on the destination environment", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const registry = yield* setup;
+      const signal = createCommandPermissions(runtime, WS_METHODS.serverSignalProcess);
+      registry.set(sessions(env), AsyncResult.success(grant(true)));
+      expect(registry.get(signal.permissionAtom(env))).toBe(false);
+      expect((yield* signal.authorize(registry, env).pipe(Effect.flip)).requiredPermission).toBe(
+        AuthEnvironmentMaintainScope,
+      );
+      registry.set(
+        sessions(other),
+        AsyncResult.success({
+          ...grant(true),
+          permissions: [AuthEnvironmentMaintainScope],
+        }),
+      );
+      expect(registry.get(signal.permissionAtom(env))).toBe(false);
+      registry.set(
+        sessions(env),
+        AsyncResult.success({
+          ...grant(true),
+          permissions: [AuthEnvironmentMaintainScope],
+        }),
+      );
+      expect(registry.get(signal.permissionAtom(env))).toBe(true);
+      yield* signal.authorize(registry, env);
+    }),
+  ),
 );

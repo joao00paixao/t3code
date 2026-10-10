@@ -1524,6 +1524,8 @@ const WsSubscribePreviewEventsRpc = Rpc.make(WS_METHODS.subscribePreviewEvents, 
 const WsSubscribeDiscoveredLocalServersRpc = Rpc.make(WS_METHODS.subscribeDiscoveredLocalServers, {
   payload: Schema.Struct({
     configuredUrls: Schema.optional(ConfiguredLocalServerUrls),
+    /** List listeners without probing their protocol, for the server manager. */
+    includeAllListeners: Schema.optional(Schema.Boolean),
   }),
   success: DiscoveredLocalServerList,
   error: EnvironmentAuthorizationError,

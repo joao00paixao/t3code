@@ -246,6 +246,16 @@ const requiredScopesForRpcCall = (
   method: string,
   payload: unknown,
 ): ReadonlyArray<AuthEnvironmentScope> => {
+  if (method === WS_METHODS.subscribeDiscoveredLocalServers) {
+    const input = Schema.decodeUnknownSync(
+      Schema.Struct({
+        includeAllListeners: Schema.optional(Schema.Boolean),
+      }),
+    )(payload);
+    return input.includeAllListeners
+      ? [AuthOrchestrationReadScope, AuthDiagnosticsReadScope]
+      : [AuthOrchestrationReadScope];
+  }
   if (method === WS_METHODS.serverRetryResourceTelemetry) {
     return [AuthEnvironmentMaintainScope, AuthDiagnosticsReadScope];
   }

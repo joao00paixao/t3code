@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Exercises signaling a subprocess captured at spawn.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeEvents from "node:events";
 import { describe, expect, it } from "@effect/vitest";
 import type {
   DesktopHostTelemetrySnapshot,
@@ -291,3 +294,54 @@ describe("ProcessDiagnostics", () => {
     }),
   );
 });
+
+it.effect("a verified stop request interrupts only the selected captured subprocess", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const child = yield* Effect.acquireRelease(
+        Effect.sync(() =>
+          NodeChildProcess.spawn(
+            process.execPath,
+            ["-e", "process.stdout.write('ready'); setInterval(() => {}, 1000)"],
+            { stdio: ["ignore", "pipe", "ignore"] },
+          ),
+        ),
+        (captured) =>
+          Effect.sync(() => {
+            if (captured.exitCode === null && captured.signalCode === null)
+              captured.kill("SIGKILL");
+          }),
+      );
+      yield* Effect.promise(() => NodeEvents.once(child.stdout!, "data"));
+      const exited = NodeEvents.once(child, "exit");
+      const snapshot = makeNativeSnapshot([
+        {
+          pid: child.pid!,
+          ppid: process.pid,
+          startTimeMs: 2_000,
+          runTimeMs: 100,
+          name: "node",
+          command: "node dev-server fixture",
+          status: "Running",
+          cpuPercent: 0,
+          cpuTimeMs: 0,
+          residentBytes: 0,
+          virtualBytes: 0,
+          ioReadBytes: 0,
+          ioWriteBytes: 0,
+          ioSemantics: "storage",
+        },
+      ]);
+      const result = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
+        Effect.flatMap((diagnostics) =>
+          diagnostics.signal({ pid: child.pid!, startTimeMs: 2_000, signal: "SIGINT" }),
+        ),
+        Effect.provide(ProcessDiagnostics.layer.pipe(Layer.provide(layerTelemetryFor(snapshot)))),
+      );
+      expect(result.signaled).toBe(true);
+      const [code, signal] = yield* Effect.promise(() => exited);
+      expect(code).toBeNull();
+      expect(signal).toBe("SIGINT");
+    }),
+  ),
+);

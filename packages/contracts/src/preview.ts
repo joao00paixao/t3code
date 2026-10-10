@@ -391,6 +391,15 @@ export const DiscoveredLocalServer = Schema.Struct({
   url: Url,
   processName: Schema.NullOr(TrimmedNonEmptyString),
   pid: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
+  /** Present only for a process observed by this environment's resource monitor. */
+  managedProcess: Schema.optional(
+    Schema.Struct({
+      startTimeMs: NonNegativeInt,
+      command: Schema.String,
+      cwd: Schema.NullOr(Schema.String),
+      canStop: Schema.Boolean,
+    }),
+  ),
   terminal: Schema.NullOr(
     Schema.Struct({
       threadId: ThreadId,
@@ -404,6 +413,7 @@ export const DiscoveredLocalServerList = Schema.Struct({
   servers: Schema.Array(DiscoveredLocalServer),
   scannedAt: Schema.String,
   configuredUrlProbing: Schema.optional(Schema.Literal(true)),
+  allListenerDiscovery: Schema.optional(Schema.Literal(true)),
 });
 export type DiscoveredLocalServerList = typeof DiscoveredLocalServerList.Type;
 

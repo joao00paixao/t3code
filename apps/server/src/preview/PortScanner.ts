@@ -43,17 +43,20 @@ import * as Semaphore from "effect/Semaphore";
 import { FetchHttpClient, HttpClient } from "effect/http";
 
 import * as ProcessRunner from "../processRunner.ts";
+import * as ResourceTelemetry from "../resourceTelemetry/ResourceTelemetry.ts";
 
 export class PortDiscovery extends Context.Service<
   PortDiscovery,
   {
     readonly scan: (
       configuredUrls?: ReadonlyArray<string>,
+      includeAllListeners?: boolean,
     ) => Effect.Effect<ReadonlyArray<DiscoveredLocalServer>>;
     readonly subscribe: (
       input: {
         readonly configuredUrls: ReadonlyArray<string>;
         readonly initialSnapshot: ReadonlyArray<DiscoveredLocalServer>;
+        readonly includeAllListeners?: boolean;
       },
       listener: (servers: ReadonlyArray<DiscoveredLocalServer>) => Effect.Effect<void>,
     ) => Effect.Effect<void, never, Scope.Scope>;
@@ -87,6 +90,7 @@ type Listener = (servers: ReadonlyArray<DiscoveredLocalServer>) => Effect.Effect
 interface ListenerSubscription {
   readonly configuredUrls: ReadonlyArray<string>;
   readonly lastSnapshot: ReadonlyArray<DiscoveredLocalServer>;
+  readonly includeAllListeners: boolean;
 }
 
 interface ScannerState {
@@ -119,6 +123,7 @@ interface WebProbeGroup {
 }
 
 interface WebProbeSnapshot {
+  readonly listeners: ReadonlyArray<DiscoveredLocalServer>;
   readonly discovered: ReadonlyArray<DiscoveredLocalServer>;
   readonly configured: ReadonlyMap<string, DiscoveredLocalServer>;
 }
@@ -169,7 +174,9 @@ const normalizeConfiguredUrls = (urls: ReadonlyArray<string>): ReadonlyArray<str
 const projectWebProbeSnapshot = (
   snapshot: WebProbeSnapshot,
   configuredUrls: ReadonlyArray<string>,
+  includeAllListeners = false,
 ): ReadonlyArray<DiscoveredLocalServer> => {
+  if (includeAllListeners) return snapshot.listeners;
   const visibleByServer = new Map<string, DiscoveredLocalServer>();
   for (const raw of normalizeConfiguredUrls(configuredUrls)) {
     const url = new URL(raw);
@@ -333,7 +340,11 @@ const serversEqual = (
       a.processName !== b.processName ||
       a.pid !== b.pid ||
       a.terminal?.threadId !== b.terminal?.threadId ||
-      a.terminal?.terminalId !== b.terminal?.terminalId
+      a.terminal?.terminalId !== b.terminal?.terminalId ||
+      a.managedProcess?.startTimeMs !== b.managedProcess?.startTimeMs ||
+      a.managedProcess?.command !== b.managedProcess?.command ||
+      a.managedProcess?.cwd !== b.managedProcess?.cwd ||
+      a.managedProcess?.canStop !== b.managedProcess?.canStop
     ) {
       return false;
     }
@@ -601,7 +612,7 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
       else configured.set(group.configuredKey, server);
     }
     yield* Ref.set(webProbeCacheRef, nextCache);
-    return { discovered, configured } satisfies WebProbeSnapshot;
+    return { discovered, configured, listeners: servers } satisfies WebProbeSnapshot;
   });
 
   const recoverProcessProbeFailure =
@@ -678,15 +689,94 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
     return yield* probeWebServers(fromProc ?? [], configuredUrls);
   });
 
+  const telemetry = yield* Effect.serviceOption(ResourceTelemetry.ResourceTelemetry);
+  // Working directories are stable for most dev servers. Keep the cache bounded to
+  // current listeners and invalidate it on PID reuse or a changed launch command.
+  let cwdCache = new Map<string, { cwd: string | null; readAt: number }>();
+  const enrichListeners = Effect.fn("PortDiscovery.enrichListeners")(function* (
+    listeners: ReadonlyArray<DiscoveredLocalServer>,
+  ) {
+    if (Option.isNone(telemetry)) return listeners;
+    const snapshot = yield* telemetry.value.refresh.pipe(Effect.option);
+    if (Option.isNone(snapshot)) return listeners;
+    const processes = new Map(snapshot.value.processes.map((entry) => [entry.identity.pid, entry]));
+    const now = yield* Clock.currentTimeMillis;
+    const nextCache = new Map<string, { cwd: string | null; readAt: number }>();
+    const enriched = yield* Effect.forEach(
+      listeners,
+      (server) =>
+        Effect.gen(function* () {
+          const entry = server.pid === null ? undefined : processes.get(server.pid);
+          if (!entry) return server;
+          const key = `${entry.identity.pid}:${entry.identity.startTimeMs}:${entry.command}`;
+          const cached = cwdCache.get(key);
+          let cwd = cached && now - cached.readAt < 15_000 ? cached.cwd : undefined;
+          if (cwd === undefined) {
+            if (hostPlatform === "linux") {
+              cwd = yield* fileSystem
+                .readLink(`/proc/${entry.identity.pid}/cwd`)
+                .pipe(Effect.orElseSucceed(() => null));
+            } else if (hostPlatform === "darwin") {
+              cwd = yield* processRunner
+                .run({
+                  command: "lsof",
+                  args: ["-a", "-p", String(entry.identity.pid), "-d", "cwd", "-Fn"],
+                  timeout: Duration.seconds(2),
+                  maxOutputBytes: 16_384,
+                  outputMode: "truncate",
+                })
+                .pipe(
+                  Effect.map(
+                    (result) =>
+                      result.stdout
+                        .split("\n")
+                        .find((line) => line.startsWith("n"))
+                        ?.slice(1) ?? null,
+                  ),
+                  Effect.orElseSucceed(() => null),
+                );
+            } else cwd = null;
+          }
+          nextCache.set(key, {
+            cwd,
+            readAt: cached && now - cached.readAt < 15_000 ? cached.readAt : now,
+          });
+          return {
+            ...server,
+            managedProcess: {
+              startTimeMs: entry.identity.startTimeMs,
+              command: entry.command || entry.name,
+              cwd,
+              // Infrastructure and provider roots stay visible, but cannot be
+              // stopped from a server row. ProcessDiagnostics rechecks identity.
+              canStop: entry.category === "server-child",
+            },
+          };
+        }),
+      { concurrency: 4 },
+    );
+    cwdCache = nextCache;
+    return enriched;
+  });
+
   const scanSnapshot = Effect.fn("PortDiscovery.scanSnapshot")(
-    (configuredUrls: ReadonlyArray<string>) =>
-      scanSemaphore.withPermits(1)(scanUnlocked(configuredUrls)),
+    (configuredUrls: ReadonlyArray<string>, includeAllListeners = false) =>
+      scanSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const snapshot = yield* scanUnlocked(configuredUrls);
+          if (!includeAllListeners) return snapshot;
+          return { ...snapshot, listeners: yield* enrichListeners(snapshot.listeners) };
+        }),
+      ),
   );
 
-  const scanOnce: PortDiscovery["Service"]["scan"] = (configuredUrls = []) => {
+  const scanOnce: PortDiscovery["Service"]["scan"] = (
+    configuredUrls = [],
+    includeAllListeners = false,
+  ) => {
     const normalized = normalizeConfiguredUrls(configuredUrls);
-    return scanSnapshot(normalized).pipe(
-      Effect.map((snapshot) => projectWebProbeSnapshot(snapshot, normalized)),
+    return scanSnapshot(normalized, includeAllListeners).pipe(
+      Effect.map((snapshot) => projectWebProbeSnapshot(snapshot, normalized, includeAllListeners)),
     );
   };
 
@@ -699,12 +789,19 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
           ),
         ),
       ];
-      const snapshot = yield* scanSnapshot(configuredUrls);
+      const includeAllListeners = [...(yield* Ref.get(stateRef)).listeners.values()].some(
+        (subscription) => subscription.includeAllListeners,
+      );
+      const snapshot = yield* scanSnapshot(configuredUrls, includeAllListeners);
       const notifications = yield* Ref.modify(stateRef, (state) => {
         const listeners = new Map(state.listeners);
         const changed: Array<readonly [Listener, ReadonlyArray<DiscoveredLocalServer>]> = [];
         for (const [listener, subscription] of listeners) {
-          const next = projectWebProbeSnapshot(snapshot, subscription.configuredUrls);
+          const next = projectWebProbeSnapshot(
+            snapshot,
+            subscription.configuredUrls,
+            subscription.includeAllListeners,
+          );
           if (serversEqual(subscription.lastSnapshot, next)) continue;
           listeners.set(listener, { ...subscription, lastSnapshot: next });
           changed.push([listener, next]);
@@ -754,6 +851,7 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
           listeners.set(listener, {
             configuredUrls: normalizeConfiguredUrls(input.configuredUrls),
             lastSnapshot: input.initialSnapshot,
+            includeAllListeners: input.includeAllListeners === true,
           });
           return { ...state, listeners };
         }),

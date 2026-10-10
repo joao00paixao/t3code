@@ -5,10 +5,13 @@ import {
   CONFIGURED_LOCAL_SERVER_URLS_MAX_ITEMS,
   PREVIEW_URL_MAX_LENGTH,
   type DiscoveredLocalServer,
+  type ResourceMonitorSnapshotEvent,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -24,6 +27,10 @@ import { FetchHttpClient } from "effect/http";
 
 import * as ProcessRunner from "../processRunner.ts";
 import * as PortScanner from "./PortScanner.ts";
+import * as ResourceTelemetry from "../resourceTelemetry/ResourceTelemetry.ts";
+import * as NativeTelemetryClient from "../resourceTelemetry/NativeTelemetryClient.ts";
+import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
+import * as ResourceAttribution from "../resourceTelemetry/ResourceAttribution.ts";
 const processProbeFailure: ProcessRunner.ProcessRunner["Service"]["run"] = (input) =>
   Effect.fail(
     new ProcessRunner.ProcessSpawnError({
@@ -89,11 +96,12 @@ const layerLsofScanner = (input: {
   readonly pid: () => number;
   readonly fetch: typeof globalThis.fetch;
   readonly stdout?: () => string;
+  readonly fileSystem?: Layer.Layer<FileSystem.FileSystem>;
 }) =>
   PortScanner.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        layerNoProc,
+        input.fileSystem ?? layerNoProc,
         Layer.succeed(ProcessRunner.ProcessRunner, {
           run: () =>
             Effect.succeed({
@@ -788,4 +796,141 @@ effectIt.effect("does not swallow process probe interruption", () =>
       expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true);
     }
   }),
+);
+
+const layerManagerTelemetry = (startTimeMs: () => number) =>
+  ResourceTelemetry.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        NativeTelemetryClient.layerTest({
+          sampleNow: Effect.sync(() => {
+            const snapshot: ResourceMonitorSnapshotEvent = {
+              version: 3,
+              type: "snapshot",
+              sequence: startTimeMs(),
+              sampledAtUnixMs: 10_000,
+              collectionDurationMicros: 0,
+              scannedProcessCount: 1,
+              retainedProcessCount: 1,
+              inaccessibleProcessCount: 0,
+              processes: [
+                {
+                  pid: 1234,
+                  ppid: process.pid,
+                  startTimeMs: startTimeMs(),
+                  runTimeMs: 100,
+                  name: "node",
+                  command: "node dev-server.js",
+                  status: "Running",
+                  cpuPercent: 0,
+                  cpuTimeMs: 0,
+                  residentBytes: 0,
+                  virtualBytes: 0,
+                  ioReadBytes: 0,
+                  ioWriteBytes: 0,
+                  ioSemantics: "storage",
+                },
+              ],
+            };
+            return { generation: 0, snapshot };
+          }),
+          health: Effect.succeed({
+            status: "healthy",
+            hello: Option.none(),
+            lastSampleAt: Option.some(DateTime.makeUnsafe(10_000)),
+            lastError: Option.none(),
+            restartCount: 0,
+            sampleIntervalMs: 1_000,
+          }),
+        }),
+        DesktopTelemetryReceiver.layerTest(),
+        ResourceAttribution.layer,
+      ),
+    ),
+  );
+
+effectIt.effect(
+  "the server manager lists unowned listeners without sending HTTP or TLS probes",
+  () => {
+    let probes = 0;
+    const layer = layerLsofScanner({
+      pid: () => 1234,
+      fetch: () => {
+        probes++;
+        return Promise.reject(new Error("Unknown listeners must not be probed"));
+      },
+    });
+    return Effect.gen(function* () {
+      const scanner = yield* PortScanner.PortDiscovery;
+      expect(yield* scanner.scan()).toEqual([]);
+      const listeners = yield* scanner.scan([], true);
+      expect(listeners).toMatchObject([{ port: LSOF_TEST_PORT, pid: 1234, terminal: null }]);
+      expect(listeners[0]?.managedProcess).toBeUndefined();
+      expect(probes).toBe(0);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+effectIt.effect(
+  "manager metadata identifies only T3 processes and invalidates cached cwd after PID reuse",
+  () => {
+    let startTimeMs = 1_000;
+    let cwdReads = 0;
+    const layer = layerLsofScanner({
+      pid: () => 1234,
+      stdout: () => `p1234\ncnode\nn*:${LSOF_TEST_PORT}\np9999\ncexternal\nn*:43210\n`,
+      fetch: () => Promise.reject(new Error("No protocol probes expected")),
+      fileSystem: FileSystem.layerNoop({
+        readLink: () =>
+          Effect.sync(() => {
+            cwdReads++;
+            return `/worktrees/task-${startTimeMs}`;
+          }),
+      }),
+    }).pipe(Layer.provide(layerManagerTelemetry(() => startTimeMs)));
+    return Effect.gen(function* () {
+      const scanner = yield* PortScanner.PortDiscovery;
+      const first = yield* scanner.scan([], true);
+      expect(first.find((entry) => entry.pid === 1234)?.managedProcess).toEqual({
+        startTimeMs: 1_000,
+        command: "node dev-server.js",
+        cwd: "/worktrees/task-1000",
+        canStop: true,
+      });
+      expect(first.find((entry) => entry.pid === 9999)?.managedProcess).toBeUndefined();
+      yield* scanner.scan([], true);
+      expect(cwdReads).toBe(1);
+      startTimeMs = 2_000;
+      const reused = yield* scanner.scan([], true);
+      expect(reused.find((entry) => entry.pid === 1234)?.managedProcess?.cwd).toBe(
+        "/worktrees/task-2000",
+      );
+      expect(cwdReads).toBe(2);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+effectIt.effect(
+  "raw listener subscriptions broadcast appearance and removal without probing the service",
+  () => {
+    let running = true;
+    const layer = layerLsofScanner({
+      pid: () => 1234,
+      stdout: () => (running ? `p1234\ncnode\nn*:${LSOF_TEST_PORT}\n` : ""),
+      fetch: () => Promise.reject(new Error("Raw discovery must not probe unknown services")),
+    });
+    return Effect.gen(function* () {
+      const scanner = yield* PortScanner.PortDiscovery;
+      const updates: ReadonlyArray<DiscoveredLocalServer>[] = [];
+      yield* scanner.subscribe(
+        { configuredUrls: [], initialSnapshot: [], includeAllListeners: true },
+        (servers) => Effect.sync(() => updates.push(servers)),
+      );
+      yield* scanner.retain;
+      expect(updates).toMatchObject([[{ port: LSOF_TEST_PORT }]]);
+      running = false;
+      yield* TestClock.adjust(Duration.seconds(3));
+      expect(updates.at(-1)).toEqual([]);
+    }).pipe(Effect.provide(layer));
+  },
 );

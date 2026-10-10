@@ -60,6 +60,7 @@ import { openPreviewSession } from "./openPreviewSession";
 import { showPreviewPopup } from "./showPreviewPopup";
 import { PreviewChromeRow } from "./PreviewChromeRow";
 import { PreviewEmptyState } from "./PreviewEmptyState";
+import { ServerManagerButton } from "./ServerManagerButton";
 import { PreviewMoreMenu, type PreviewMoreMenuActions } from "./PreviewMoreMenu";
 import {
   commitBrowserViewportChange,
@@ -1021,30 +1022,33 @@ export function PreviewView({
           ) : null
         }
         trailingActions={
-          moreMenuActions ? (
-            <PreviewMoreMenu
-              enabled={
-                runtimeTabId !== null &&
-                (serverOwnsRendering || (desktopOverlay?.hasWebContents ?? false))
-              }
-              actions={moreMenuActions}
-              {...(moveTarget
-                ? { move: { label: moveLabel, onMove: () => void handleMoveTab() } }
-                : {})}
-              profileName={activeProfileName}
-              zoomFactor={
-                serverOwnsRendering ? serverZoomFactor : (desktopOverlay?.zoomFactor ?? 1)
-              }
-              colorScheme={
-                serverOwnsRendering
-                  ? (snapshot?.colorScheme ?? "system")
-                  : (desktopOverlay?.colorScheme ?? "system")
-              }
-              deviceToolbarVisible={viewport._tag !== "fill"}
-              onToggleDeviceToolbar={handleToggleDeviceToolbar}
-              nativePictureInPicture={desktopOverlay?.pictureInPicture ?? false}
-            />
-          ) : null
+          <>
+            <ServerManagerButton threadRef={threadRef} />
+            {moreMenuActions ? (
+              <PreviewMoreMenu
+                enabled={
+                  runtimeTabId !== null &&
+                  (serverOwnsRendering || (desktopOverlay?.hasWebContents ?? false))
+                }
+                actions={moreMenuActions}
+                {...(moveTarget
+                  ? { move: { label: moveLabel, onMove: () => void handleMoveTab() } }
+                  : {})}
+                profileName={activeProfileName}
+                zoomFactor={
+                  serverOwnsRendering ? serverZoomFactor : (desktopOverlay?.zoomFactor ?? 1)
+                }
+                colorScheme={
+                  serverOwnsRendering
+                    ? (snapshot?.colorScheme ?? "system")
+                    : (desktopOverlay?.colorScheme ?? "system")
+                }
+                deviceToolbarVisible={viewport._tag !== "fill"}
+                onToggleDeviceToolbar={handleToggleDeviceToolbar}
+                nativePictureInPicture={desktopOverlay?.pictureInPicture ?? false}
+              />
+            ) : null}
+          </>
         }
       />
 

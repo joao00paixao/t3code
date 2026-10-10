@@ -401,7 +401,10 @@ const layerVcs = Layer.empty.pipe(
 
 const layerCheckpointStore = CheckpointStore.layer.pipe(Layer.provide(layerVcsDriverRegistry));
 
-const layerPortScanner = PortScanner.layer.pipe(Layer.provide(ProcessRunner.layer));
+const layerPortScanner = PortScanner.layer.pipe(
+  Layer.provide(ProcessRunner.layer),
+  Layer.provide(layerResourceTelemetry),
+);
 
 const layerTerminal = TerminalManager.layer.pipe(
   Layer.provide(layerPtyAdapter),

@@ -16,3 +16,19 @@ To copy all retained output, choose Select all in the terminal's context menu,
 then copy. Cmd+A on macOS and Ctrl+Shift+A elsewhere select the same output.
 Ctrl+A still moves to the beginning of shell input on Windows and Linux.
 Jump to latest in the context menu returns to the current output.
+
+## Find and stop running servers
+
+On web and desktop, open **Servers** in the browser toolbar to see listening ports
+on the connected environment, including servers an agent started in the background.
+Thread rows show a server count when T3 can associate the process with that thread.
+The list also includes non-web services; open a preview only for a web server.
+
+Closing a browser tab does not stop its server. Use **Stop** to request a graceful
+shutdown of a verified T3 child process. Process details require diagnostics access,
+and stopping requires maintenance access. Processes outside T3 remain visible but
+cannot be stopped here. If a process no longer belongs to T3's process tree, its
+ownership and Stop control may be unavailable.
+
+Working-directory matches are marked as inferred. Threads sharing a checkout or
+worktree cannot be distinguished by their directory alone.

@@ -21,6 +21,7 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 import * as RpcTest from "effect/rpc/RpcTest";
 
 import {
@@ -443,4 +444,54 @@ it.effect("denies manual cleanup before the handler without settings permission"
     });
     expect(handled).toBe(false);
   }).pipe(Effect.scoped),
+);
+
+it.effect.each([
+  { scopes: [AuthOrchestrationReadScope], allowed: false },
+  { scopes: [AuthOrchestrationReadScope, AuthDiagnosticsReadScope], allowed: true },
+])(
+  "server-manager details require diagnostics permission (allowed=$allowed)",
+  ({ scopes, allowed }) =>
+    Effect.gen(function* () {
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (
+            tag,
+          ): tag is Exclude<
+            keyof typeof RPC_REQUIRED_SCOPES,
+            typeof WS_METHODS.subscribeDiscoveredLocalServers
+          > => tag !== WS_METHODS.subscribeDiscoveredLocalServers,
+        ),
+      );
+      let handled = 0;
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            group.toLayerHandler(WS_METHODS.subscribeDiscoveredLocalServers, () =>
+              Stream.fromEffect(
+                Effect.sync(() => {
+                  handled++;
+                  return { servers: [], scannedAt: "2026-10-10T00:00:00.000Z" };
+                }),
+              ),
+            ),
+            RpcAuthorization.layer(scopes),
+          ),
+        ),
+      );
+      yield* client[WS_METHODS.subscribeDiscoveredLocalServers]({}).pipe(Stream.runCollect);
+      expect(handled).toBe(1);
+      const manager = client[WS_METHODS.subscribeDiscoveredLocalServers]({
+        includeAllListeners: true,
+      }).pipe(Stream.runCollect);
+      if (allowed) {
+        yield* manager;
+        expect(handled).toBe(2);
+      } else {
+        expect(yield* manager.pipe(Effect.flip)).toMatchObject({
+          requiredPermission: AuthDiagnosticsReadScope,
+        });
+        expect(handled).toBe(1);
+      }
+    }).pipe(Effect.scoped),
 );

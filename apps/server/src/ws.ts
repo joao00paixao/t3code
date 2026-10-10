@@ -2927,15 +2927,20 @@ const layerWsRpc = (
             Effect.gen(function* () {
               const configuredUrls = input.configuredUrls ?? [];
               yield* portDiscovery.retain;
-              const initial = yield* portDiscovery.scan(configuredUrls);
+              const initial = yield* portDiscovery.scan(configuredUrls, input.includeAllListeners);
               const initialScannedAt = DateTime.formatIso(yield* DateTime.now);
               yield* Queue.offer(queue, {
                 servers: initial,
                 scannedAt: initialScannedAt,
                 configuredUrlProbing: true,
+                ...(input.includeAllListeners ? { allListenerDiscovery: true as const } : {}),
               });
               yield* portDiscovery.subscribe(
-                { configuredUrls, initialSnapshot: initial },
+                {
+                  configuredUrls,
+                  initialSnapshot: initial,
+                  includeAllListeners: input.includeAllListeners === true,
+                },
                 (servers) =>
                   Effect.gen(function* () {
                     const scannedAt = DateTime.formatIso(yield* DateTime.now);
@@ -2943,6 +2948,7 @@ const layerWsRpc = (
                       servers,
                       scannedAt,
                       configuredUrlProbing: true,
+                      ...(input.includeAllListeners ? { allListenerDiscovery: true as const } : {}),
                     });
                   }),
               );
