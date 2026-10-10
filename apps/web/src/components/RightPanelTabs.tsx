@@ -34,6 +34,7 @@ import {
   Files,
   Globe2,
   Plus,
+  RadioTower,
   TerminalSquare,
 } from "lucide-react";
 import { Volume2, VolumeOff } from "lucide";
@@ -131,6 +132,7 @@ interface RightPanelTabsProps {
   onMoveSurface?: (surfaceId: string, toIndex: number) => void;
   onCopyFilePath: (relativePath: string) => void;
   onAddBrowser: () => void;
+  onOpenServers?: () => void;
   /**
    * Separate from `onAddBrowser` on purpose: that one is passed directly as a
    * DOM click handler, and a `(profileId?: string)` signature would silently
@@ -172,6 +174,7 @@ export function shouldOpenDefaultBrowserProfileFromMenuClick(
 
 const SURFACE_DISABLED_REASONS = {
   browser: "Browser previews are only available in the T3 Code desktop app.",
+  servers: "Servers are only available from a thread.",
   terminal: "Terminal surfaces are only available from a project thread.",
   files: "Files are only available when a project is open.",
   diff: "Diff is only available for server threads in Git repositories.",
@@ -195,6 +198,7 @@ const LAUNCHER_SHORTCUT_BLOCKING_LAYERS = [
 /** One-line unavailability hints for the empty-state rows. */
 const SURFACE_UNAVAILABLE_HINTS = {
   browser: "Only available in the desktop app.",
+  servers: "Available from a thread.",
   terminal: "Available when a project is open.",
   files: "Available when a project is open.",
   diff: "Available for Git repositories.",
@@ -333,6 +337,7 @@ function SurfaceMenuItem(props: {
  */
 function RightPanelEmptyState(props: {
   onAddBrowser: () => void;
+  onOpenServers?: (() => void) | undefined;
   onAddBrowserInProfile: (profileId: string) => void;
   browserProfiles: ReadonlyArray<{ readonly id: string; readonly name: string }>;
   onAddTerminal: () => void;
@@ -360,6 +365,14 @@ function RightPanelEmptyState(props: {
       available: props.browserAvailable,
       disabledReason: SURFACE_UNAVAILABLE_HINTS.browser,
       onClick: props.onAddBrowser,
+    },
+    {
+      label: "Servers",
+      icon: RadioTower,
+      shortcut: "S",
+      available: props.onOpenServers !== undefined,
+      disabledReason: SURFACE_UNAVAILABLE_HINTS.servers,
+      onClick: () => props.onOpenServers?.(),
     },
     {
       label: "Terminal",
@@ -944,6 +957,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       onClick: props.onAddBrowser,
     },
     {
+      label: "Servers",
+      icon: RadioTower,
+      shortcut: "S",
+      available: props.onOpenServers !== undefined,
+      disabledReason: SURFACE_DISABLED_REASONS.servers,
+      onClick: () => props.onOpenServers?.(),
+    },
+    {
       label: "Terminal",
       icon: TerminalSquare,
       shortcut: "T",
@@ -1475,6 +1496,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
         {props.activeSurfaceId === null ? (
           <RightPanelEmptyState
             onAddBrowser={props.onAddBrowser}
+            onOpenServers={props.onOpenServers}
             onAddBrowserInProfile={props.onAddBrowserInProfile}
             browserProfiles={browserProfiles}
             onAddTerminal={props.onAddTerminal}

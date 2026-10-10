@@ -285,6 +285,7 @@ import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { ServerManagerDialog } from "./preview/ServerManagerButton";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
 import { useDeviceState } from "~/state/device";
@@ -5460,6 +5461,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadRef?.environmentId ?? null,
   );
   const [deviceSetupThread, setDeviceSetupThread] = useState<ScopedThreadRef | null>(null);
+  const [serverManagerThread, setServerManagerThread] = useState<ScopedThreadRef | null>(null);
   const addDeviceSurface = useCallback(() => {
     if (!activeThreadRef) return;
     if (!deviceState.onboardingCompleted || deviceState.hostStatus === "disabled") {
@@ -12001,6 +12003,7 @@ export default function ChatView(props: ChatViewProps) {
           onMoveSurface={moveRightPanelSurface}
           onCopyFilePath={copyRightPanelFilePath}
           onAddBrowser={() => createBrowserSurface()}
+          onOpenServers={() => setServerManagerThread(activeThreadRef)}
           onAddBrowserInProfile={createBrowserSurface}
           onAddTerminal={addTerminalSurface}
           onAddDiff={addDiffSurface}
@@ -12060,6 +12063,7 @@ export default function ChatView(props: ChatViewProps) {
             onMoveSurface={moveRightPanelSurface}
             onCopyFilePath={copyRightPanelFilePath}
             onAddBrowser={() => createBrowserSurface()}
+            onOpenServers={() => setServerManagerThread(activeThreadRef)}
             onAddBrowserInProfile={createBrowserSurface}
             onAddTerminal={addTerminalSurface}
             onAddDiff={addDiffSurface}
@@ -12119,6 +12123,15 @@ export default function ChatView(props: ChatViewProps) {
         </AlertDialogPopup>
       </AlertDialog>
       <LinkPullRequestDialogHost />
+      {serverManagerThread ? (
+        <ServerManagerDialog
+          key={`${serverManagerThread.environmentId}:${serverManagerThread.threadId}`}
+          threadRef={serverManagerThread}
+          onOpenChange={(open) => {
+            if (!open) setServerManagerThread(null);
+          }}
+        />
+      ) : null}
       {expandedImage && (
         <ExpandedImageDialog
           key={expandedImageKey(expandedImage)}

@@ -110,6 +110,40 @@ async function press(key: string, options: KeyboardEventInit = {}) {
 }
 
 describe("right panel new-tab shortcut", () => {
+  it.each(["inline", "sheet"] as const)(
+    "opens servers from the %s pane menu while Browser is unavailable",
+    async (mode) => {
+      const openServers = vi.fn();
+      await renderPanel({
+        mode,
+        surfaces: [{ id: "files", kind: "files" }],
+        activeSurfaceId: "files",
+        onOpenServers: openServers,
+      });
+      await press("t", { metaKey: true });
+      expect(document.querySelector('[role="menu"]')?.textContent).toContain("Servers");
+      expect((await press("s")).defaultPrevented).toBe(true);
+      expect(openServers).toHaveBeenCalledOnce();
+      expect(document.querySelector('[role="menu"]:not([data-closed])')).toBeNull();
+      expect(addFiles).not.toHaveBeenCalled();
+    },
+  );
+
+  it("offers Servers in the empty pane while preserving typed S characters", async () => {
+    const openServers = vi.fn();
+    await renderPanel({ onOpenServers: openServers });
+    const launcher = container.querySelector<HTMLElement>('[aria-label="Open a surface"]')!;
+    expect(launcher.textContent).toContain("Servers");
+    const input = document.createElement("input");
+    container.append(input);
+    await act(() => input.focus());
+    expect((await press("s")).defaultPrevented).toBe(false);
+    expect(openServers).not.toHaveBeenCalled();
+    await act(() => launcher.focus());
+    expect((await press("S")).defaultPrevented).toBe(true);
+    expect(openServers).toHaveBeenCalledOnce();
+  });
+
   it.each(["MacIntel", "Win32", "Linux x86_64"])(
     "opens the menu on %s and chooses a tab",
     async (platform) => {
@@ -206,6 +240,7 @@ describe("right panel new-tab shortcut", () => {
     };
     await renderPanel(panel);
     await press("t", { metaKey: true });
+    await press("ArrowDown");
     await press("ArrowDown");
     await press("ArrowDown");
     await press("ArrowDown");

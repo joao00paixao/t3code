@@ -37,12 +37,10 @@ export function ServerManagerButton({
   readonly compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [onlyThread, setOnlyThread] = useState(compact);
   const canInspect = useEnvironmentScope(threadRef.environmentId, AuthDiagnosticsReadScope);
   const state = useEnvironmentQuery(serverManagerQuery(threadRef.environmentId)(canInspect));
   const servers = state.data?.servers ?? [];
   const owned = servers.filter(({ owner }) => owner.threadId === threadRef.threadId);
-  const visible = onlyThread ? owned : servers;
 
   if (compact && owned.length === 0) return null;
   return (
@@ -66,7 +64,6 @@ export function ServerManagerButton({
         onKeyDown={(event) => event.stopPropagation()}
         onClick={(event) => {
           event.stopPropagation();
-          setOnlyThread(compact);
           setOpen(true);
         }}
       >
@@ -74,75 +71,99 @@ export function ServerManagerButton({
         {compact ? owned.length : `Servers${servers.length ? ` (${servers.length})` : ""}`}
       </Button>
       {open ? (
-        <Dialog open onOpenChange={setOpen}>
-          <DialogPopup>
-            <DialogHeader>
-              <DialogTitle>Running servers</DialogTitle>
-              <DialogDescription>
-                Listening ports on this environment. Closing a preview leaves its server running.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogPanel>
-              <div className="flex items-center gap-1">
-                <Button
-                  size="compact"
-                  variant={onlyThread ? "ghost-muted" : "secondary"}
-                  aria-pressed={!onlyThread}
-                  onClick={() => setOnlyThread(false)}
-                >
-                  All ({servers.length})
-                </Button>
-                <Button
-                  size="compact"
-                  variant={onlyThread ? "secondary" : "ghost-muted"}
-                  aria-pressed={onlyThread}
-                  onClick={() => setOnlyThread(true)}
-                >
-                  This thread ({owned.length})
-                </Button>
-              </div>
-              {state.error ? (
-                <p role="alert" className="text-sm text-destructive-foreground">
-                  Could not refresh servers: {state.error}
-                </p>
-              ) : null}
-              {state.isPending && servers.length === 0 ? (
-                <p role="status" className="text-sm text-muted-foreground">
-                  Looking for running servers…
-                </p>
-              ) : null}
-              {!state.isPending && !state.error && visible.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  {onlyThread
-                    ? "No servers associated with this thread."
-                    : "No listening servers found."}
-                </p>
-              ) : null}
-              <div className="divide-y divide-border rounded-lg border border-border">
-                {visible.map(({ server, owner }) => (
-                  <ServerManagerRow
-                    key={`${server.host}:${server.port}:${server.pid}:${server.managedProcess?.startTimeMs}`}
-                    threadRef={threadRef}
-                    server={server}
-                    owner={owner}
-                  />
-                ))}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {!canInspect
-                  ? "Diagnostics access is required to list all listening ports. "
-                  : state.data && !state.data.allListenerDiscovery
-                    ? "This environment supports web-server discovery only. Update its server to list all ports. "
-                    : ""}
-                Stop is available for verified T3 child processes with maintenance access.
-                Working-directory matches are marked as inferred; shared directories do not identify
-                a thread.
-              </p>
-            </DialogPanel>
-          </DialogPopup>
-        </Dialog>
+        <ServerManagerDialog
+          threadRef={threadRef}
+          initiallyOnlyThread={compact}
+          onOpenChange={setOpen}
+        />
       ) : null}
     </div>
+  );
+}
+
+export function ServerManagerDialog({
+  threadRef,
+  initiallyOnlyThread = false,
+  onOpenChange,
+}: {
+  readonly threadRef: ScopedThreadRef;
+  readonly initiallyOnlyThread?: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+}) {
+  const [onlyThread, setOnlyThread] = useState(initiallyOnlyThread);
+  const canInspect = useEnvironmentScope(threadRef.environmentId, AuthDiagnosticsReadScope);
+  const state = useEnvironmentQuery(serverManagerQuery(threadRef.environmentId)(canInspect));
+  const servers = state.data?.servers ?? [];
+  const owned = servers.filter(({ owner }) => owner.threadId === threadRef.threadId);
+  const visible = onlyThread ? owned : servers;
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogPopup>
+        <DialogHeader>
+          <DialogTitle>Running servers</DialogTitle>
+          <DialogDescription>
+            Listening ports on this environment. Closing a preview leaves its server running.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          <div className="flex items-center gap-1">
+            <Button
+              size="compact"
+              variant={onlyThread ? "ghost-muted" : "secondary"}
+              aria-pressed={!onlyThread}
+              onClick={() => setOnlyThread(false)}
+            >
+              All ({servers.length})
+            </Button>
+            <Button
+              size="compact"
+              variant={onlyThread ? "secondary" : "ghost-muted"}
+              aria-pressed={onlyThread}
+              onClick={() => setOnlyThread(true)}
+            >
+              This thread ({owned.length})
+            </Button>
+          </div>
+          {state.error ? (
+            <p role="alert" className="text-sm text-destructive-foreground">
+              Could not refresh servers: {state.error}
+            </p>
+          ) : null}
+          {state.isPending && servers.length === 0 ? (
+            <p role="status" className="text-sm text-muted-foreground">
+              Looking for running servers…
+            </p>
+          ) : null}
+          {!state.isPending && !state.error && visible.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {onlyThread
+                ? "No servers associated with this thread."
+                : "No listening servers found."}
+            </p>
+          ) : null}
+          <div className="divide-y divide-border rounded-lg border border-border">
+            {visible.map(({ server, owner }) => (
+              <ServerManagerRow
+                key={`${server.host}:${server.port}:${server.pid}:${server.managedProcess?.startTimeMs}`}
+                threadRef={threadRef}
+                server={server}
+                owner={owner}
+              />
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {!canInspect
+              ? "Diagnostics access is required to list all listening ports. "
+              : state.data && !state.data.allListenerDiscovery
+                ? "This environment supports web-server discovery only. Update its server to list all ports. "
+                : ""}
+            Stop is available for verified T3 child processes with maintenance access.
+            Working-directory matches are marked as inferred; shared directories do not identify a
+            thread.
+          </p>
+        </DialogPanel>
+      </DialogPopup>
+    </Dialog>
   );
 }
 
