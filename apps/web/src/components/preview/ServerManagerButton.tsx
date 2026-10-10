@@ -10,7 +10,6 @@ import { ExternalLink, RadioTower, Square } from "lucide-react";
 import { useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
-import { Tooltip, TooltipTrigger, TooltipPopup } from "~/components/ui/tooltip";
 import {
   Dialog,
   DialogDescription,
@@ -167,6 +166,16 @@ function ServerManagerRow({
   const pending = useRef(false);
   const [stopRequested, setStopRequested] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const command = server.processDetails?.command ?? server.managedProcess?.command;
+  const cwd = server.processDetails?.cwd ?? server.managedProcess?.cwd;
+  const startedAt = server.processDetails?.startTimeMs ?? server.managedProcess?.startTimeMs;
+  const stopExplanation = !server.managedProcess
+    ? "This process is not tracked as a T3 child. Stop it in its terminal or application."
+    : !server.managedProcess.canStop
+      ? "T3 protects its own services and agent processes from being stopped here."
+      : !canStop
+        ? "Maintenance access is required to stop this process."
+        : "T3 verified this child process. Stop sends an interrupt (SIGINT).";
   const stop = async () => {
     if (!server.pid || !server.managedProcess?.canStop || !canStop || pending.current) return;
     pending.current = true;
@@ -213,7 +222,7 @@ function ServerManagerRow({
           <p className="truncate font-mono text-sm tabular-nums">
             {server.host}:{server.port}
           </p>
-          <p className="truncate text-xs text-muted-foreground">
+          <p className="wrap-anywhere text-xs text-muted-foreground">
             {server.processName ?? "Unknown process"}
             {server.pid ? ` · PID ${server.pid}` : ""}
           </p>
@@ -238,20 +247,76 @@ function ServerManagerRow({
           {busy ? "Stopping…" : stopRequested ? "Stop requested" : "Stop"}
         </Button>
       </div>
-      <div className="min-w-0 pl-7 text-xs text-muted-foreground">
-        <p className="truncate">
+      <div className="min-w-0 space-y-1 pl-7 text-xs text-muted-foreground">
+        <p className="wrap-anywhere">
           {owner.projectName ??
             (server.managedProcess ? "T3 process" : "Outside T3 / ownership unknown")}
           {owner.threadTitle ? ` / ${owner.threadTitle}${owner.inferred ? " (inferred)" : ""}` : ""}
         </p>
-        {server.managedProcess ? (
-          <Tooltip>
-            <TooltipTrigger render={<p className="truncate font-mono" />}>
-              {server.managedProcess.command}
-            </TooltipTrigger>
-            <TooltipPopup>{server.managedProcess.command}</TooltipPopup>
-          </Tooltip>
-        ) : null}
+        {command ? (
+          <p className="line-clamp-2 select-text wrap-anywhere font-mono text-foreground">
+            {command}
+          </p>
+        ) : (
+          <p>Command unavailable.</p>
+        )}
+        {cwd ? <p className="select-text wrap-anywhere font-mono">{cwd}</p> : null}
+        <details className="pt-1">
+          <summary
+            className="w-fit cursor-pointer rounded-sm text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+            aria-label={`Details for server on port ${server.port}`}
+          >
+            Details
+          </summary>
+          <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 rounded-md bg-muted/40 p-3">
+            <dt>Command</dt>
+            <dd className="select-text wrap-anywhere whitespace-pre-wrap font-mono text-foreground">
+              {command ?? "Unavailable — process details could not be read."}
+            </dd>
+            <dt>Directory</dt>
+            <dd className="select-text wrap-anywhere font-mono text-foreground">
+              {cwd ?? "Unavailable — working directory could not be read."}
+            </dd>
+            <dt>Process</dt>
+            <dd className="select-text wrap-anywhere text-foreground">
+              {server.processName ?? "Unknown"}
+              {server.pid ? ` · PID ${server.pid}` : ""}
+            </dd>
+            <dt>Parent PID</dt>
+            <dd className="select-text font-mono text-foreground">
+              {server.processDetails?.parentPid ?? "Unavailable"}
+            </dd>
+            <dt>Started</dt>
+            <dd className="text-foreground">
+              {startedAt !== undefined ? new Date(startedAt).toLocaleString() : "Unavailable"}
+            </dd>
+            <dt>Project</dt>
+            <dd className="select-text wrap-anywhere text-foreground">
+              {owner.projectName ?? "No matching project"}
+            </dd>
+            <dt>Thread</dt>
+            <dd className="select-text wrap-anywhere text-foreground">
+              {owner.threadTitle ?? "No unique thread identified"}
+            </dd>
+            <dt>Association</dt>
+            <dd className="wrap-anywhere text-foreground">
+              {server.terminal
+                ? "Tracked T3 terminal"
+                : owner.inferred
+                  ? "Inferred from a unique thread working directory"
+                  : owner.projectName
+                    ? "Project working directory only; thread unknown"
+                    : "No terminal or working directory match"}
+            </dd>
+            <dt>Preview URL</dt>
+            <dd className="select-text wrap-anywhere font-mono text-foreground">{server.url}</dd>
+            <dt>Stop</dt>
+            <dd className="wrap-anywhere text-foreground">{stopExplanation}</dd>
+          </dl>
+          <p className="mt-2">
+            Detected as a TCP listener. A listening port alone does not identify a web app.
+          </p>
+        </details>
         {message ? (
           <p role="alert" className="mt-1 text-destructive-foreground">
             {message}

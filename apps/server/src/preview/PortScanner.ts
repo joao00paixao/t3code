@@ -339,6 +339,10 @@ const serversEqual = (
       a.url !== b.url ||
       a.processName !== b.processName ||
       a.pid !== b.pid ||
+      a.processDetails?.command !== b.processDetails?.command ||
+      a.processDetails?.cwd !== b.processDetails?.cwd ||
+      a.processDetails?.startTimeMs !== b.processDetails?.startTimeMs ||
+      a.processDetails?.parentPid !== b.processDetails?.parentPid ||
       a.terminal?.threadId !== b.terminal?.threadId ||
       a.terminal?.terminalId !== b.terminal?.terminalId ||
       a.managedProcess?.startTimeMs !== b.managedProcess?.startTimeMs ||
@@ -350,6 +354,22 @@ const serversEqual = (
     }
   }
   return true;
+};
+
+const parseProcessDetails = (raw: string) => {
+  const processes = new Map<number, { command: string; startTimeMs: number; parentPid: number }>();
+  for (const line of raw.split("\n")) {
+    const match =
+      /^\s*(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/.exec(
+        line,
+      );
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const startTimeMs = Date.parse(match[3]!);
+    if (pid <= 0 || !Number.isFinite(startTimeMs) || startTimeMs < 0) continue;
+    processes.set(pid, { command: match[4]!, startTimeMs, parentPid: Number(match[2]) });
+  }
+  return processes;
 };
 
 const isCommandNotFound = (error: ProcessRunner.ProcessSpawnError): boolean =>
@@ -696,31 +716,74 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
   const enrichListeners = Effect.fn("PortDiscovery.enrichListeners")(function* (
     listeners: ReadonlyArray<DiscoveredLocalServer>,
   ) {
-    if (Option.isNone(telemetry)) return listeners;
-    const snapshot = yield* telemetry.value.refresh.pipe(Effect.option);
-    if (Option.isNone(snapshot)) return listeners;
-    const processes = new Map(snapshot.value.processes.map((entry) => [entry.identity.pid, entry]));
+    const snapshot = Option.isSome(telemetry)
+      ? yield* telemetry.value.refresh.pipe(Effect.option)
+      : Option.none();
+    const processes = new Map(
+      Option.isSome(snapshot)
+        ? snapshot.value.processes.map((entry) => [entry.identity.pid, entry] as const)
+        : [],
+    );
+    const pids = [...new Set(listeners.flatMap((server) => server.pid ?? []))];
+    const externalPids = pids.filter((pid) => !processes.has(pid));
+    // One bounded, read-only process query per scan, only for the diagnostic
+    // manager. Port discovery itself never sends requests to unknown services.
+    const external =
+      externalPids.length > 0 && (hostPlatform === "darwin" || hostPlatform === "linux")
+        ? yield* processRunner
+            .run({
+              command: "ps",
+              args: [
+                "-ww",
+                "-p",
+                externalPids.slice(0, 512).join(","),
+                "-o",
+                "pid=",
+                "-o",
+                "ppid=",
+                "-o",
+                "lstart=",
+                "-o",
+                "args=",
+              ],
+              env: { LC_ALL: "C" },
+              timeout: Duration.seconds(2),
+              maxOutputBytes: 262_144,
+            })
+            .pipe(
+              Effect.map((result) => parseProcessDetails(result.stdout)),
+              Effect.orElseSucceed(() => parseProcessDetails("")),
+            )
+        : parseProcessDetails("");
     const now = yield* Clock.currentTimeMillis;
     const nextCache = new Map<string, { cwd: string | null; readAt: number }>();
-    const enriched = yield* Effect.forEach(
-      listeners,
-      (server) =>
+    const details = new Map<number, NonNullable<DiscoveredLocalServer["processDetails"]>>();
+    yield* Effect.forEach(
+      pids,
+      (pid) =>
         Effect.gen(function* () {
-          const entry = server.pid === null ? undefined : processes.get(server.pid);
-          if (!entry) return server;
-          const key = `${entry.identity.pid}:${entry.identity.startTimeMs}:${entry.command}`;
+          const entry = processes.get(pid);
+          const info = entry
+            ? {
+                command: entry.command || entry.name,
+                startTimeMs: entry.identity.startTimeMs,
+                parentPid: entry.ppid,
+              }
+            : external.get(pid);
+          if (!info) return;
+          const key = `${pid}:${info.startTimeMs}:${info.command}`;
           const cached = cwdCache.get(key);
           let cwd = cached && now - cached.readAt < 15_000 ? cached.cwd : undefined;
           if (cwd === undefined) {
             if (hostPlatform === "linux") {
               cwd = yield* fileSystem
-                .readLink(`/proc/${entry.identity.pid}/cwd`)
+                .readLink(`/proc/${pid}/cwd`)
                 .pipe(Effect.orElseSucceed(() => null));
             } else if (hostPlatform === "darwin") {
               cwd = yield* processRunner
                 .run({
                   command: "lsof",
-                  args: ["-a", "-p", String(entry.identity.pid), "-d", "cwd", "-Fn"],
+                  args: ["-a", "-p", String(pid), "-d", "cwd", "-Fn"],
                   timeout: Duration.seconds(2),
                   maxOutputBytes: 16_384,
                   outputMode: "truncate",
@@ -741,22 +804,31 @@ export const make = Effect.gen(function* PortDiscoveryMake() {
             cwd,
             readAt: cached && now - cached.readAt < 15_000 ? cached.readAt : now,
           });
-          return {
-            ...server,
-            managedProcess: {
-              startTimeMs: entry.identity.startTimeMs,
-              command: entry.command || entry.name,
-              cwd,
-              // Infrastructure and provider roots stay visible, but cannot be
-              // stopped from a server row. ProcessDiagnostics rechecks identity.
-              canStop: entry.category === "server-child",
-            },
-          };
+          details.set(pid, { ...info, cwd });
         }),
       { concurrency: 4 },
     );
     cwdCache = nextCache;
-    return enriched;
+    return listeners.map((server) => {
+      const info = server.pid === null ? undefined : details.get(server.pid);
+      if (!info) return server;
+      const entry = processes.get(server.pid!);
+      return {
+        ...server,
+        processDetails: info,
+        ...(entry
+          ? {
+              managedProcess: {
+                startTimeMs: entry.identity.startTimeMs,
+                command: info.command,
+                cwd: info.cwd,
+                // Only telemetry-verified child processes can be stopped.
+                canStop: entry.category === "server-child",
+              },
+            }
+          : {}),
+      };
+    });
   });
 
   const scanSnapshot = Effect.fn("PortDiscovery.scanSnapshot")(

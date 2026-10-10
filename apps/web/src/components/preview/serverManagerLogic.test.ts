@@ -90,4 +90,32 @@ describe("server ownership", () => {
       ).threadId,
     ).toBe("task");
   });
+
+  it("uses external process directories for association without granting process control", () => {
+    const server: DiscoveredLocalServer = {
+      host: "localhost",
+      port: 5173,
+      url: "http://localhost:5173",
+      processName: "node",
+      pid: 42,
+      terminal: null,
+      processDetails: {
+        command: "node dev",
+        cwd: "/worktrees/task/web",
+        startTimeMs: 1000,
+        parentPid: 1,
+      },
+    };
+    expect(resolveServerOwner(server, [thread("task", "/worktrees/task")], projects)).toMatchObject(
+      { threadId: "task", inferred: true },
+    );
+    expect(server.managedProcess).toBeUndefined();
+    expect(
+      resolveServerOwner(
+        { ...server, processDetails: { ...server.processDetails!, cwd: "/projects/example/web" } },
+        [thread("task", null)],
+        projects,
+      ),
+    ).toMatchObject({ threadId: null, projectName: "Example" });
+  });
 });

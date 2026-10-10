@@ -39,7 +39,7 @@ export function resolveServerOwner(
       inferred: false,
     };
   }
-  const cwd = server.managedProcess?.cwd;
+  const cwd = server.managedProcess?.cwd ?? server.processDetails?.cwd;
   if (!cwd) return { threadId: null, threadTitle: null, projectName: null, inferred: false };
   const candidates = threads.filter(
     (thread) => thread.worktreePath && containsPath(thread.worktreePath, cwd),

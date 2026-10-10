@@ -97,15 +97,23 @@ const layerLsofScanner = (input: {
   readonly fetch: typeof globalThis.fetch;
   readonly stdout?: () => string;
   readonly fileSystem?: Layer.Layer<FileSystem.FileSystem>;
+  readonly psOutput?: () => string;
+  readonly cwdOutput?: () => string;
+  readonly platform?: "linux" | "darwin";
 }) =>
   PortScanner.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         input.fileSystem ?? layerNoProc,
         Layer.succeed(ProcessRunner.ProcessRunner, {
-          run: () =>
+          run: (request) =>
             Effect.succeed({
-              stdout: input.stdout?.() ?? `p${input.pid()}\ncnode\nn*:${LSOF_TEST_PORT}\n`,
+              stdout:
+                request.command === "ps"
+                  ? (input.psOutput?.() ?? "")
+                  : request.args.includes("cwd")
+                    ? (input.cwdOutput?.() ?? "")
+                    : (input.stdout?.() ?? `p${input.pid()}\ncnode\nn*:${LSOF_TEST_PORT}\n`),
               stderr: "",
               code: null,
               timedOut: false,
@@ -115,7 +123,7 @@ const layerLsofScanner = (input: {
               stderrInvalidUtf8: false,
             }),
         }),
-        Layer.succeed(HostProcess.Platform, "linux"),
+        Layer.succeed(HostProcess.Platform, input.platform ?? "linux"),
         FetchHttpClient.layer.pipe(
           Layer.provide(Layer.succeed(FetchHttpClient.Fetch, input.fetch)),
         ),
@@ -934,3 +942,85 @@ effectIt.effect(
     }).pipe(Effect.provide(layer));
   },
 );
+
+effectIt.effect("external process details are diagnostic-only and never allow Stop", () => {
+  let cwdReads = 0;
+  let command = "/usr/local/bin/node /projects/example/dev-server.js --port 5173";
+  let started = "Sat Oct 10 12:30:00 2026";
+  const layer = layerLsofScanner({
+    pid: () => 1234,
+    stdout: () => `p1234\ncnode\nn*:${LSOF_TEST_PORT}\nn*:43210\n`,
+    psOutput: () => `  1234  100  ${started} ${command}\n`,
+    fetch: () => Promise.reject(new Error("No probes expected")),
+    fileSystem: FileSystem.layerNoop({
+      readLink: () =>
+        Effect.sync(() => {
+          cwdReads++;
+          return command.includes("other") ? "/projects/other" : "/projects/example";
+        }),
+    }),
+  });
+  return Effect.gen(function* () {
+    const scanner = yield* PortScanner.PortDiscovery;
+    expect(yield* scanner.scan()).toEqual([]);
+    expect(cwdReads).toBe(0);
+    const first = yield* scanner.scan([], true);
+    expect(first).toHaveLength(2);
+    for (const listener of first) {
+      expect(listener.processDetails).toEqual({
+        command,
+        cwd: "/projects/example",
+        parentPid: 100,
+        startTimeMs: Date.parse(started),
+      });
+      expect(listener.managedProcess).toBeUndefined();
+    }
+    expect(cwdReads).toBe(1);
+    yield* scanner.scan([], true);
+    expect(cwdReads).toBe(1);
+    started = "Sat Oct 10 12:31:00 2026";
+    command = "node /projects/other/dev-server.js";
+    const reused = yield* scanner.scan([], true);
+    expect(reused[0]?.processDetails?.cwd).toBe("/projects/other");
+    expect(cwdReads).toBe(2);
+  }).pipe(Effect.provide(layer));
+});
+
+effectIt.effect(
+  "macOS external details preserve commands and directories containing spaces",
+  () => {
+    const command = '/Applications/Example App.app/Contents/MacOS/server --name "My App"';
+    const layer = layerLsofScanner({
+      platform: "darwin",
+      pid: () => 1234,
+      psOutput: () => `1234 1 Sat Oct 10 12:30:00 2026 ${command}\n`,
+      cwdOutput: () => "p1234\nn/Users/example/My Project\n",
+      fetch: () => Promise.reject(new Error("No probes expected")),
+    });
+    return Effect.gen(function* () {
+      const scanner = yield* PortScanner.PortDiscovery;
+      const [listener] = yield* scanner.scan([], true);
+      expect(listener?.processDetails).toMatchObject({
+        command,
+        cwd: "/Users/example/My Project",
+        parentPid: 1,
+      });
+      expect(listener?.managedProcess).toBeUndefined();
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+effectIt.effect("missing process details keep external listeners visible", () => {
+  const layer = layerLsofScanner({
+    pid: () => 1234,
+    psOutput: () => "malformed or inaccessible\n",
+    fetch: () => Promise.reject(new Error("No probes expected")),
+  });
+  return Effect.gen(function* () {
+    const scanner = yield* PortScanner.PortDiscovery;
+    const [listener] = yield* scanner.scan([], true);
+    expect(listener?.pid).toBe(1234);
+    expect(listener?.processDetails).toBeUndefined();
+    expect(listener?.managedProcess).toBeUndefined();
+  }).pipe(Effect.provide(layer));
+});

@@ -391,6 +391,15 @@ export const DiscoveredLocalServer = Schema.Struct({
   url: Url,
   processName: Schema.NullOr(TrimmedNonEmptyString),
   pid: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
+  /** Diagnostic metadata only; this never grants permission to signal a process. */
+  processDetails: Schema.optional(
+    Schema.Struct({
+      command: Schema.String,
+      cwd: Schema.NullOr(Schema.String),
+      startTimeMs: NonNegativeInt,
+      parentPid: NonNegativeInt,
+    }),
+  ),
   /** Present only for a process observed by this environment's resource monitor. */
   managedProcess: Schema.optional(
     Schema.Struct({

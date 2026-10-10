@@ -1,6 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Exercises signaling a subprocess captured at spawn.
 import * as NodeChildProcess from "node:child_process";
-import * as NodeEvents from "node:events";
 import { describe, expect, it } from "@effect/vitest";
 import type {
   DesktopHostTelemetrySnapshot,
@@ -312,8 +311,12 @@ it.effect("a verified stop request interrupts only the selected captured subproc
               captured.kill("SIGKILL");
           }),
       );
-      yield* Effect.promise(() => NodeEvents.once(child.stdout!, "data"));
-      const exited = NodeEvents.once(child, "exit");
+      yield* Effect.promise(
+        () => new Promise<void>((resolve) => child.stdout!.once("data", () => resolve())),
+      );
+      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+        (resolve) => child.once("exit", (code, signal) => resolve({ code, signal })),
+      );
       const snapshot = makeNativeSnapshot([
         {
           pid: child.pid!,
@@ -339,7 +342,7 @@ it.effect("a verified stop request interrupts only the selected captured subproc
         Effect.provide(ProcessDiagnostics.layer.pipe(Layer.provide(layerTelemetryFor(snapshot)))),
       );
       expect(result.signaled).toBe(true);
-      const [code, signal] = yield* Effect.promise(() => exited);
+      const { code, signal } = yield* Effect.promise(() => exited);
       expect(code).toBeNull();
       expect(signal).toBe("SIGINT");
     }),

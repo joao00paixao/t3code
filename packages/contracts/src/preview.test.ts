@@ -298,6 +298,24 @@ describe("PreviewEvent", () => {
 });
 
 describe("DiscoveredLocalServer", () => {
+  it("decodes external diagnostic details without managed process control", () => {
+    const server = decodeServer({
+      host: "localhost",
+      port: 5173,
+      url: "http://localhost:5173",
+      processName: "node",
+      pid: 12345,
+      terminal: null,
+      processDetails: {
+        command: "node dev.js",
+        cwd: "/projects/example",
+        startTimeMs: 1000,
+        parentPid: 1,
+      },
+    });
+    expect(server.processDetails?.command).toBe("node dev.js");
+    expect(server.managedProcess).toBeUndefined();
+  });
   it("decodes a server with process metadata", () => {
     const server = decodeServer({
       host: "localhost",
